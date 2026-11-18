@@ -167,7 +167,7 @@ typedef uint32_t quantis_register_value;
 
 
 /** Size in bytes of all hardware registers */
-#define QUANTIS_REG_LENGTH (16 * 4)
+#define QUANTIS_REG_LENGTH (20 * 4)
 
 /**
  * Size of the internal buffer used to read random data.

@@ -155,7 +155,7 @@ void __lockfunc _qunlock_kernel(const char *func, const char *file, int line);
 struct quantis_pci_device
 {
   unsigned char pci_dev_irq;                         /* irq of this device */
-  u_int32_t* regs;                                   /* BUS address in CPU space */
+  void __iomem* regs;                                   /* BUS address in CPU space */
   struct semaphore mutex;                            /* device's mutex */
   unsigned char buffer[QUANTIS_DEVICE_BUFFER_SIZE];  /* random data's buffer */
   u_int32_t device_number;                           /* internal number of this device */
@@ -185,12 +185,12 @@ struct semaphore quantis_mutex;
 
 quantis_register_value quantis_reg_get(quantis_pci_device* qdev, quantis_register reg)
 {
-  return qdev->regs[reg / 4];
+  return readl((u8 __iomem *)qdev->regs + reg);
 }
 
 void quantis_reg_set(quantis_pci_device* qdev, quantis_register reg, quantis_register_value value)
 {
-  qdev->regs[reg / 4] = value;
+  writel(value, (u8 __iomem *)qdev->regs + reg);
 }
 
 
@@ -394,7 +394,7 @@ ssize_t quantis_read(struct file* file,
   quantis_pci_device* device;
 
   /* Verify if this is a write access. */
-  if(!access_ok(VERIFY_WRITE, buffer, length))
+  if(!access_ok(buffer, length))
   {
     QUANTIS_ERROR("Write access denied for buffer %p, length 0x%08x",
                   buffer,
@@ -625,9 +625,17 @@ int DEV_INIT quantis_pci_probe(struct pci_dev* pdev,
     return status;
   }
 
-  /* map bus memory into CPU space */
+  /* Validate BAR1 before accessing hardware registers. */
+  if (!(pci_resource_flags(pdev, 1) & IORESOURCE_MEM) ||
+      pci_resource_len(pdev, 1) < QUANTIS_REG_LENGTH)
+  {
+    QUANTIS_ERROR("BAR1 is not a sufficiently large memory resource");
+    return -ENODEV;
+  }
+
+  /* Map bus memory into CPU space. */
   down(&quantis_mutex);
-  device->regs = (u_int32_t*)ioremap_nocache(pci_resource_start(pdev, 1), QUANTIS_REG_LENGTH);
+  device->regs = ioremap(pci_resource_start(pdev, 1), QUANTIS_REG_LENGTH);
 
   /* Sets devices info */
   device->device_number = quantis_pci_cards_count - 1;
@@ -941,6 +949,11 @@ static int __init quantis_module_init(void)
 
   /* Populate sysfs entries */
   quantis_class = class_create(THIS_MODULE, QUANTIS_PCI_DEVICE_NAME);
+  if (IS_ERR(quantis_class))
+  {
+    status = PTR_ERR(quantis_class);
+    goto cleanup_chrdev;
+  }
 
   /* Register the PCI driver */
   status = pci_register_driver(&quantis_pci_driver);
@@ -951,24 +964,10 @@ static int __init quantis_module_init(void)
   }
 
 
-  /* Creates a file in the /proc directory */
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0))
-  if(!proc_create(QUANTIS_PCI_DEVICE_NAME,
-                  0,
-                  NULL,
-                  &quantis_fops))
-#else
-  if(!create_proc_read_entry(QUANTIS_PCI_DEVICE_NAME,
-                             0,
-                             NULL,
-                             quantis_pci_proc_read,
-                             NULL))
-#endif
-  {
-    QUANTIS_ERROR("PCI init module failed");
-    status = -EBUSY;
-    goto cleanup_2;
-  }
+  /*
+   * Legacy /proc registration disabled for Linux 6.1.
+   * The character device remains available for hardware RNG access.
+   */
 
   /* Info */
   QUANTIS_INFO("Driver loaded. Found %d card(s)", quantis_pci_cards_count);
@@ -976,11 +975,11 @@ static int __init quantis_module_init(void)
   return 0;
 
   /* Cleanup functions */
-cleanup_2:
-  pci_unregister_driver(&quantis_pci_driver);
-
 cleanup_1:
   class_destroy(quantis_class);
+
+cleanup_chrdev:
+  unregister_chrdev_region(quantis_dev_number, QUANTIS_PCI_MAX_CARDS);
   return status;
 }
 
@@ -992,9 +991,6 @@ static void __exit quantis_module_exit(void)
 {
   QUANTIS_INFO("Unloading driver...");
 
-  /* Removes file in /proc directory */
-  remove_proc_entry(QUANTIS_PCI_DEVICE_NAME, 0);
-
   /* Unregister the pci driver */
   pci_unregister_driver(&quantis_pci_driver);
 
@@ -1002,7 +998,7 @@ static void __exit quantis_module_exit(void)
   class_destroy(quantis_class);
 
   /* Releases the magior number */
-  unregister_chrdev_region(MAJOR(quantis_dev_number), QUANTIS_PCI_MAX_CARDS);
+  unregister_chrdev_region(quantis_dev_number, QUANTIS_PCI_MAX_CARDS);
 
   QUANTIS_INFO("Driver unloaded");
 }
