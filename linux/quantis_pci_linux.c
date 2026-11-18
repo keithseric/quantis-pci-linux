@@ -160,6 +160,9 @@ struct quantis_pci_device
   unsigned char buffer[QUANTIS_DEVICE_BUFFER_SIZE];  /* random data's buffer */
   u_int32_t device_number;                           /* internal number of this device */
   struct cdev cdev;                                  /* char device structure */
+  struct pci_dev *pdev;                              /* associated PCI device */
+  struct device chardev;                             /* device lifetime */
+  bool disconnected;                                 /* PCI device removed */
   char pciBusName[256];
   char ais31StartupTestsRequestFlag;
 };
@@ -167,11 +170,45 @@ struct quantis_pci_device
 /** Holds all device's information */
 quantis_pci_device* quantis_devices[QUANTIS_PCI_MAX_CARDS];
 
+/* Slots reserved by PCI probes but not yet published. */
+static bool quantis_slots_reserved[QUANTIS_PCI_MAX_CARDS];
+
 /** Number of Quantis PCI devices */
 int quantis_pci_cards_count = 0;
 
 /** Global mutex */
 struct semaphore quantis_mutex;
+
+
+/*
+ * Release the per-device allocation when its final reference is dropped.
+ * PCI resources must already have been released by the remove path.
+ */
+static void quantis_device_release(struct device *dev)
+{
+  quantis_pci_device *device =
+      container_of(dev, quantis_pci_device, chardev);
+
+  kfree(device);
+}
+
+
+/*
+ * Find an unused device slot.
+ * Caller must hold quantis_mutex.
+ */
+static int quantis_find_free_slot(void)
+{
+  int i;
+
+  for (i = 0; i < QUANTIS_PCI_MAX_CARDS; i++)
+  {
+    if (!quantis_devices[i] && !quantis_slots_reserved[i])
+      return i;
+  }
+
+  return -ENOSPC;
+}
 
 
 /****************************** Shared functions *****************************
@@ -352,21 +389,26 @@ static struct pci_driver quantis_pci_driver =
 int quantis_open(struct inode* inode, struct file* file)
 {
   int card_number = MINOR(inode->i_rdev);
+  quantis_pci_device *device;
 
-  /* Consistency checks */
-  if(card_number > (quantis_pci_cards_count - 1))
+  if (card_number < 0 || card_number >= QUANTIS_PCI_MAX_CARDS)
+    return -ENODEV;
+
+  if (down_interruptible(&quantis_mutex))
+    return -ERESTARTSYS;
+
+  device = quantis_devices[card_number];
+
+  if (!device || device->disconnected)
   {
+    up(&quantis_mutex);
     return -ENODEV;
   }
 
-  if (!try_module_get(THIS_MODULE))
-  {
-    return -EBUSY;
-  }
+  get_device(&device->chardev);
+  up(&quantis_mutex);
 
-  /* Fill private data */
-  file->private_data = quantis_devices[card_number];
-
+  file->private_data = device;
   return 0;
 }
 
@@ -376,7 +418,12 @@ int quantis_open(struct inode* inode, struct file* file)
  */
 int quantis_close(struct inode* inode, struct file* file)
 {
-  module_put(THIS_MODULE);
+  quantis_pci_device *device = file->private_data;
+
+  file->private_data = NULL;
+
+  if (device)
+    put_device(&device->chardev);
 
   return 0;
 }
@@ -402,11 +449,24 @@ ssize_t quantis_read(struct file* file,
     return -EFAULT;
   }
 
+  /* Never request more data than the internal buffer can hold. */
+  if (length > QUANTIS_DEVICE_BUFFER_SIZE)
+  {
+    length = QUANTIS_DEVICE_BUFFER_SIZE;
+  }
+
   device = file->private_data;
   if (down_interruptible(&(device->mutex)))
   {
     QUANTIS_ERROR("down_interruptible ERROR");
     return -ERESTARTSYS;
+  }
+
+  /* Removal must not unmap registers during a hardware read. */
+  if (device->disconnected)
+  {
+    up(&device->mutex);
+    return -ENODEV;
   }
 
   bytes_read = quantis_rng_read(device,
@@ -439,14 +499,9 @@ long quantis_unlocked_ioctl(struct file* f,
                             unsigned int command,
                             unsigned long arg)
 {
-  struct inode *inode = f->f_path.dentry->d_inode;
-  int ret;
+  struct inode *inode = file_inode(f);
 
-  lock_kernel();
-  ret = (long) quantis_ioctl(inode, f, command, arg);
-  unlock_kernel();
-
-  return ret;
+  return quantis_ioctl(inode, f, command, arg);
 }
 #endif
 
@@ -463,12 +518,19 @@ int quantis_ioctl(struct inode* inode,
                   unsigned long arg)
 {
   int status = 0;
-  int card_number = MINOR(inode->i_rdev);
-  quantis_pci_device* device = quantis_devices[card_number];
+  quantis_pci_device* device = file->private_data;
 
-  if(down_interruptible(&device->mutex))
-  {
+  if (!device)
+    return -ENODEV;
+
+  if (down_interruptible(&device->mutex))
     return -ERESTARTSYS;
+
+  /* Serialize hardware access with PCI removal. */
+  if (device->disconnected)
+  {
+    up(&device->mutex);
+    return -ENODEV;
   }
 
   switch (cmd)
@@ -508,7 +570,9 @@ int quantis_ioctl(struct inode* inode,
     case QUANTIS_IOCTL_ENABLE_MODULE:
     {
       u_int32_t modules;
-      get_user(modules, (u_int32_t*)arg);
+      status = get_user(modules, (u_int32_t*)arg);
+      if (status)
+        break;
       quantis_rng_enable_modules(device, modules);
       break;
     }
@@ -516,7 +580,9 @@ int quantis_ioctl(struct inode* inode,
     case QUANTIS_IOCTL_DISABLE_MODULE:
     {
       u_int32_t modules;
-      get_user(modules, (u_int32_t*)arg);
+      status = get_user(modules, (u_int32_t*)arg);
+      if (status)
+        break;
       quantis_rng_disable_modules(device, modules);
       break;
     }
@@ -584,30 +650,36 @@ int DEV_INIT quantis_pci_probe(struct pci_dev* pdev,
   int pciDeviceValue;
   
 
+  int slot;
+
   down(&quantis_mutex);
-
-  /* Consistency check */
-  if (quantis_pci_cards_count >= QUANTIS_PCI_MAX_CARDS)
+  slot = quantis_find_free_slot();
+  if (slot < 0)
   {
-    QUANTIS_ERROR("Not supporting more than %d cards", QUANTIS_PCI_MAX_CARDS);
     up(&quantis_mutex);
-    return -ENXIO;
+    return slot;
   }
 
-  /* Allocate memory for the per-device structure */
-  quantis_devices[quantis_pci_cards_count] = kmalloc(sizeof(quantis_pci_device), GFP_KERNEL);
-  if (!quantis_devices[quantis_pci_cards_count])
-  {
-    QUANTIS_ERROR("Unable to allocate memory for the device");
-    up(&quantis_mutex);
-    return -1;
-  }
-
-  /* Local variable for easier access */
-  device = quantis_devices[quantis_pci_cards_count];
-  quantis_pci_cards_count++;
-
+  quantis_slots_reserved[slot] = true;
   up(&quantis_mutex);
+
+  /* Keep the device private until PCI initialization succeeds. */
+  device = kzalloc(sizeof(*device), GFP_KERNEL);
+  if (!device)
+  {
+    status = -ENOMEM;
+    goto err_release_slot;
+  }
+
+  device_initialize(&device->chardev);
+  device->chardev.release = quantis_device_release;
+  device->chardev.class = quantis_class;
+
+  device->pdev = pdev;
+  device->device_number = slot;
+  device->disconnected = false;
+  device->ais31StartupTestsRequestFlag = 1;
+  sema_init(&device->mutex, 1);
 
   /* Initialize PCI device */
   status = pci_enable_device(pdev);
