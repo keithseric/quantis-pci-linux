@@ -1,0 +1,36 @@
+
+June 06 2017
+    * version 2.9
+    - linux: fix compilation issue with kernel >= 4.0.
+    - tested with kernel 4.10 and gcc 6.3.0 (Ubuntu 17.04)
+
+
+March 27 2014
+    * version 2.8
+    - linux: add 2 IOCTL to get and clear the AIS-31 startup tests request flag.
+
+
+Nov 8 2013
+    * version 2.7
+    - linux: Fix compilation with kernel >= 3.10 (replace create_proc_read_entry() by proc_create() ) 
+
+
+Apr 19 2013
+    * version 2.6
+    - linux: Add get PCI id IOCTL command to retrive the PCI slot
+             Fix compilation with kernel >= 3.8 (remove __devinit, __devexit, __devexit_p, __devinitdata) 
+
+
+Jul 10 2012
+    * version 2.5
+    - linux: fix compilation with kernel > 2.6.37 (Linux big kernel lock fix).
+
+??? ?? 2010
+    * version 2.0 released.
+    - linux: added udev support. Devices are automatically crated to /dev/quantisX
+    - Kernel 2.4 series are not supported anymore. You can still use old 
+     version (1.1) on 2.4 kernels.
+
+
+Jan 18 2008
+    * version 1.1 released.  Baseline for this ChangeLog.
