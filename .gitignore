@@ -1,0 +1,27 @@
+# Linux kernel build artifacts
+*.o
+*.ko
+*.mod
+*.mod.c
+*.cmd
+*.o.d
+*.symvers
+Module.symvers
+modules.order
+.tmp_versions/
+.cache.mk
+
+# Compiled diagnostic utility
+tools/quantis-status
+
+# Editor and temporary files
+*~
+*.swp
+*.bak
+*.tmp
+
+# Private signing material
+*.key
+*.pem
+*.p12
+*.pfx

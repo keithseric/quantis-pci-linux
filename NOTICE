@@ -1,0 +1,88 @@
+Quantis PCI/PCIe Linux Driver Modernization
+==========================================
+
+This is an independent modernization of the original Quantis
+PCI/PCIe random number generator driver developed by ID Quantique SA.
+
+Upstream Software
+-----------------
+
+Original software: Quantis v18.03.08
+Original author: ID Quantique SA
+Location: Carouge/Geneva, Switzerland
+
+Original copyright notices are retained in the source files.
+
+The upstream Linux driver and common headers provide alternative
+licensing under BSD-style terms or the GNU General Public License,
+version 2. Refer to the individual source file headers for the
+original licensing terms and disclaimers.
+
+Source Provenance
+-----------------
+
+Original archive:
+Quantis-v18.03.08.zip
+
+Archive distribution location:
+https://pkg.freebsd.org/ports-distfiles/Quantis-v18.03.08.zip
+
+SHA256:
+d7e88f5213c17a414666954266462219d4f7f8a0de0f3cc72d832b600fb73d3e
+
+Original source directory:
+Drivers/Unix/QuantisPci/
+
+This repository contains a selected subset of the upstream source,
+focused on Linux PCI/PCIe driver support.
+
+Generated build artifacts, obsolete Big Kernel Lock implementation,
+and unrelated operating system drivers have been excluded.
+
+Modernization
+-------------
+
+The Linux modernization includes changes to kernel API compatibility,
+PCI device lifecycle management, memory-mapped I/O handling,
+character device management, and hardware module health validation.
+
+The modernization was developed and tested using physical Quantis
+hardware running Debian GNU/Linux 12 with a Linux 6.1 kernel.
+
+New modifications and project-specific supporting code are
+distributed under GPL-2.0-only.
+
+Project maintainer: Seric <seric@seric.com>
+
+Development included assistance from OpenAI ChatGPT. Hardware testing,
+deployment, and operational validation were performed by the project
+maintainer.
+
+Repository History
+------------------
+
+The public Git history has been reconstructed from the original
+local development history to exclude generated build artifacts
+and unnecessary legacy source files.
+
+The reconstructed commits identify their corresponding original
+development commits.
+
+Independence
+------------
+
+This project is independently maintained.
+
+It is not affiliated with, endorsed by, or supported by ID Quantique SA.
+
+The original product and company names are used solely to identify
+the hardware and software with which this driver is intended to work.
+
+No Warranty
+-----------
+
+This software is provided without warranty.
+
+Hardware health reporting does not constitute certification of
+randomness quality, cryptographic suitability, entropy guarantees,
+or compliance with any particular security standard.

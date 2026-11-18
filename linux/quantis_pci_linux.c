@@ -1,4 +1,21 @@
 /*
+ * SPDX-License-Identifier: GPL-2.0-only
+ *
+ * Linux modernization modifications, 2026.
+ * Licensing revision: 2026-11-17.
+ * Maintainer: Seric <seric@seric.com>
+ *
+ * This file has been modified from the original
+ * ID Quantique Quantis v18.03.08 source.
+ *
+ * Original copyright notices and upstream licensing
+ * grants are preserved below.
+ *
+ * Project modifications are distributed under the
+ * GNU General Public License version 2 only.
+ */
+
+/*
  * Quantis PCI driver
  *
  * Copyright (C) 2004-2014 ID Quantique SA, Carouge/Geneva, Switzerland
@@ -320,7 +337,7 @@ module_exit(quantis_module_exit);
 
 MODULE_DEVICE_TABLE(pci, quantis_pci_ids_table);
 
-MODULE_LICENSE(QUANTIS_PCI_DRIVER_LICENSE);
+MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR(QUANTIS_PCI_DRIVER_AUTHOR);
 MODULE_DESCRIPTION(QUANTIS_PCI_DRIVER_NAME);
 
