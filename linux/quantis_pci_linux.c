@@ -67,9 +67,6 @@
 
 
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36))
-#include "bkl.c"
-#endif
 
 #include "../common/quantis_pci.h"
 #include "../common/quantis_pci_common.h"
@@ -116,23 +113,7 @@ struct class* quantis_class;
 
 
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36))
 
-#ifndef lock_kernel
-void __lockfunc _qlock_kernel(const char *func, const char *file, int line);
-#define lock_kernel() do {                                      \
-        _qlock_kernel(__func__, __FILE__, __LINE__);             \
-} while (0)
-#endif
-
-#ifndef unlock_kernel
-void __lockfunc _qunlock_kernel(const char *func, const char *file, int line);
-#define unlock_kernel() do {                                    \
-        _qunlock_kernel(__func__, __FILE__, __LINE__);           \
-} while (0)
-#endif
-
-#endif
 
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0))
@@ -170,7 +151,11 @@ struct quantis_pci_device
 /** Holds all device's information */
 quantis_pci_device* quantis_devices[QUANTIS_PCI_MAX_CARDS];
 
-/* Slots reserved by PCI probes but not yet published. */
+/*
+ * Slots assigned during this module's lifetime.
+ * Do not reuse a minor number after PCI removal, because an
+ * old character-device instance may still have references.
+ */
 static bool quantis_slots_reserved[QUANTIS_PCI_MAX_CARDS];
 
 /** Number of Quantis PCI devices */
@@ -183,6 +168,11 @@ struct semaphore quantis_mutex;
 /*
  * Release the per-device allocation when its final reference is dropped.
  * PCI resources must already have been released by the remove path.
+ *
+ * Do not acquire quantis_mutex here: the final put_device() may
+ * occur while the caller already holds that semaphore.
+ *
+ * Assigned minor numbers remain reserved until module unload.
  */
 static void quantis_device_release(struct device *dev)
 {
@@ -388,18 +378,19 @@ static struct pci_driver quantis_pci_driver =
  */
 int quantis_open(struct inode* inode, struct file* file)
 {
-  int card_number = MINOR(inode->i_rdev);
-  quantis_pci_device *device;
-
-  if (card_number < 0 || card_number >= QUANTIS_PCI_MAX_CARDS)
-    return -ENODEV;
+  quantis_pci_device *device =
+      container_of(inode->i_cdev, quantis_pci_device, cdev);
 
   if (down_interruptible(&quantis_mutex))
     return -ERESTARTSYS;
 
-  device = quantis_devices[card_number];
-
-  if (!device || device->disconnected)
+  /*
+   * The PCI remove path clears the published slot under this lock.
+   * Reject opens against devices that are no longer published.
+   */
+  if (READ_ONCE(device->disconnected) ||
+      device->device_number >= QUANTIS_PCI_MAX_CARDS ||
+      quantis_devices[device->device_number] != device)
   {
     up(&quantis_mutex);
     return -ENODEV;
@@ -411,7 +402,6 @@ int quantis_open(struct inode* inode, struct file* file)
   file->private_data = device;
   return 0;
 }
-
 
 /**
  *
@@ -463,7 +453,7 @@ ssize_t quantis_read(struct file* file,
   }
 
   /* Removal must not unmap registers during a hardware read. */
-  if (device->disconnected)
+  if (READ_ONCE(device->disconnected))
   {
     up(&device->mutex);
     return -ENODEV;
@@ -527,7 +517,7 @@ int quantis_ioctl(struct inode* inode,
     return -ERESTARTSYS;
 
   /* Serialize hardware access with PCI removal. */
-  if (device->disconnected)
+  if (READ_ONCE(device->disconnected))
   {
     up(&device->mutex);
     return -ENODEV;
@@ -543,7 +533,8 @@ int quantis_ioctl(struct inode* inode,
 
     case QUANTIS_IOCTL_GET_CARD_COUNT:
     {
-      status = put_user((u_int32_t)quantis_pci_cards_count, (u_int32_t*)arg);
+      status = put_user((u_int32_t)READ_ONCE(quantis_pci_cards_count),
+                        (u_int32_t*)arg);
       break;
     }
 
@@ -642,256 +633,167 @@ int quantis_pci_resume(struct pci_dev* pdev)
 int DEV_INIT quantis_pci_probe(struct pci_dev* pdev,
                                 const struct pci_device_id* ent)
 {
-  int status;
-  quantis_pci_device* device;
-  unsigned long bar0Flag;
-  u16 dval;
-  char byte;
-  int pciDeviceValue;
-  
-
-  int slot;
+  quantis_pci_device *device;
+  int status, slot;
 
   down(&quantis_mutex);
   slot = quantis_find_free_slot();
-  if (slot < 0)
-  {
+  if (slot < 0) {
     up(&quantis_mutex);
     return slot;
   }
-
   quantis_slots_reserved[slot] = true;
   up(&quantis_mutex);
 
-  /* Keep the device private until PCI initialization succeeds. */
   device = kzalloc(sizeof(*device), GFP_KERNEL);
-  if (!device)
-  {
+  if (!device) {
     status = -ENOMEM;
-    goto err_release_slot;
+    goto err_slot;
   }
 
   device_initialize(&device->chardev);
   device->chardev.release = quantis_device_release;
   device->chardev.class = quantis_class;
+  device->chardev.parent = &pdev->dev;
+  device->chardev.devt = MKDEV(MAJOR(quantis_dev_number), slot);
 
   device->pdev = pdev;
   device->device_number = slot;
-  device->disconnected = false;
   device->ais31StartupTestsRequestFlag = 1;
   sema_init(&device->mutex, 1);
 
-  /* Initialize PCI device */
+  status = dev_set_name(&device->chardev, "%s%d",
+                        QUANTIS_PCI_DEVICE_NAME, slot);
+  if (status)
+    goto err_device;
+
   status = pci_enable_device(pdev);
-  if (status != 0)
-  {
-    QUANTIS_ERROR("Can't enable PCI device");
-    return status;
-  }
+  if (status)
+    goto err_device;
 
-  /* Reserved PCI I/O and memory resources */
   status = pci_request_regions(pdev, QUANTIS_PCI_DEVICE_NAME);
-  if (status != 0)
-  {
-    QUANTIS_ERROR("Can't reserve PCI I/O and memory resources");
-    return status;
-  }
+  if (status)
+    goto err_disable;
 
-  /* Validate BAR1 before accessing hardware registers. */
   if (!(pci_resource_flags(pdev, 1) & IORESOURCE_MEM) ||
-      pci_resource_len(pdev, 1) < QUANTIS_REG_LENGTH)
-  {
-    QUANTIS_ERROR("BAR1 is not a sufficiently large memory resource");
-    return -ENODEV;
+      pci_resource_len(pdev, 1) < QUANTIS_REG_LENGTH) {
+    status = -ENODEV;
+    goto err_regions;
   }
 
-  /* Map bus memory into CPU space. */
-  down(&quantis_mutex);
-  device->regs = ioremap(pci_resource_start(pdev, 1), QUANTIS_REG_LENGTH);
+  device->regs = ioremap(pci_resource_start(pdev, 1),
+                         QUANTIS_REG_LENGTH);
+  if (!device->regs) {
+    status = -ENOMEM;
+    goto err_regions;
+  }
 
-  /* Sets devices info */
-  device->device_number = quantis_pci_cards_count - 1;
   device->pci_dev_irq = pdev->irq;
+  strscpy(device->pciBusName, pci_name(pdev),
+          sizeof(device->pciBusName));
 
-  /* Init AIS-31 Startup Tests request flag */
-  device->ais31StartupTestsRequestFlag = 1;
-  
-  sema_init(&device->mutex, 1);
-  up(&quantis_mutex);
-
-  
-  
-  QUANTIS_INFO("READING CONFIGURATION REGISTER:");
-      
-  down(&device->mutex);
-  sprintf(device->pciBusName, "%s", pci_name(pdev));
-  up(&device->mutex);
-      
-  
-  QUANTIS_INFO("Bus,Device,Function: %s", device->pciBusName);
-  pciDeviceValue = quantis_get_pci_bus_device_id(device);
-  
-  QUANTIS_INFO("PCI DeviceID:    0x%x", pciDeviceValue);        
-  
-  down(&device->mutex);
-  pci_read_config_word(pdev, PCI_VENDOR_ID, &dval);
-  up(&device->mutex);
-  QUANTIS_INFO(" PCI_VENDOR_ID:     %x", dval);
-
-  down(&device->mutex);
-  pci_read_config_word(pdev, PCI_DEVICE_ID, &dval);
-  up(&device->mutex);
-  QUANTIS_INFO(" PCI_DEVICE_ID:     %x", dval);
-
-  down(&device->mutex);
-  pci_read_config_byte(pdev, PCI_REVISION_ID, &byte);
-  up(&device->mutex);
-  QUANTIS_INFO(" PCI_REVISION_ID:   %d", byte);
-
-  down(&device->mutex);
-  pci_read_config_byte(pdev, PCI_INTERRUPT_LINE, &byte);
-  up(&device->mutex);
-  QUANTIS_INFO(" PCI_INTERRUPT_LINE:%d", byte);
-
-  down(&device->mutex);
-  pci_read_config_byte(pdev, PCI_LATENCY_TIMER, &byte);
-  up(&device->mutex);
-  QUANTIS_INFO(" PCI_LATENCY_TIMER: %d", byte);
-
-  down(&device->mutex);
-  pci_read_config_word(pdev, PCI_COMMAND, &dval);
-  up(&device->mutex);
-  QUANTIS_INFO(" PCI_COMMAND:       %d", dval);
-  
-  
-  /* Get BAR0 Flag */
-  down(&device->mutex);
-  bar0Flag = pci_resource_flags(pdev, PCI_BASE_ADDRESS_REGISTER0); 
-  up(&device->mutex);
-
-  bar0Flag &= 0x00000F00; // mask to keep only resource type
-
-  switch (bar0Flag)
-  {
-    case IORESOURCE_IO:
-      QUANTIS_INFO(" BAR0 resource type: IO");
-      break;
-
-    case IORESOURCE_MEM:
-      QUANTIS_INFO(" BAR0 resource type: memory");
-      break;
-
-    case IORESOURCE_IRQ:
-      QUANTIS_INFO(" BAR0 resource type: irq");
-      break;
-
-    case IORESOURCE_DMA:
-      QUANTIS_INFO(" BAR0 resource type: dma");
-      break;
-
-    default:
-      QUANTIS_INFO(" BAR0 flag: unknown 0x%lx", bar0Flag);
-      break;
-
-  }
-  
-  QUANTIS_INFO(" BAR0 start     0x%x", (unsigned int)pci_resource_start(pdev, PCI_BASE_ADDRESS_REGISTER0));
-  QUANTIS_INFO(" BAR0 end       0x%x", (unsigned int)pci_resource_end(pdev, PCI_BASE_ADDRESS_REGISTER0));
-  QUANTIS_INFO(" BAR0 length    0x%x (%d) bytes", (unsigned int)pci_resource_len(pdev, PCI_BASE_ADDRESS_REGISTER0), 
-                                                  (unsigned int)pci_resource_len(pdev, PCI_BASE_ADDRESS_REGISTER0));
-  
-  
-  
-  /* Reset Quantis */
-  down(&device->mutex);
   quantis_rng_reset(device);
-  up(&device->mutex);
 
-  /* Connect the file operations with the cdev */
   cdev_init(&device->cdev, &quantis_fops);
   device->cdev.owner = THIS_MODULE;
 
-  /* Connect the major/minor number to the cdev */
-  status = cdev_add(&device->cdev,
-                    MKDEV(MAJOR(quantis_dev_number), device->device_number),
-                    1);
-  if (status < 0)
-  {
-    QUANTIS_ERROR("Can't connect major/mino number to cdev");
-    return status;
-  }
+  /*
+   * Publish the initialized device before cdev registration,
+   * because cdev_device_add() may permit immediate opens.
+   */
+  down(&quantis_mutex);
+  quantis_devices[slot] = device;
+  quantis_pci_cards_count++;
+  up(&quantis_mutex);
 
-  /* Send uevents to udev, so it'll create /dev nodes */
-  // TODO Create udev rule to override default permission
-  device_create(quantis_class,
-                NULL,
-                MKDEV(MAJOR(quantis_dev_number), device->device_number),
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27))
-                NULL,
-#endif
-                "%s%d", QUANTIS_PCI_DEVICE_NAME, device->device_number);
+  status = cdev_device_add(&device->cdev, &device->chardev);
+  if (status)
+    goto err_publish;
 
-  /* Some debug information */
-  QUANTIS_INFO("Found card #%d", device->device_number);
+  pci_set_drvdata(pdev, device);
 
-  QUANTIS_INFO("   core version 0x%08x", quantis_rng_version(device));
-
-  QUANTIS_INFO("   device registered at /dev/%s%d",
-               QUANTIS_PCI_DEVICE_NAME,
-               device->device_number);
-
+  QUANTIS_INFO("Found card #%d at %s", slot, pci_name(pdev));
+  QUANTIS_INFO("Core version 0x%08x",
+               quantis_rng_version(device));
+  QUANTIS_INFO("Device registered at /dev/%s%d",
+               QUANTIS_PCI_DEVICE_NAME, slot);
   return 0;
+
+err_publish:
+  down(&quantis_mutex);
+  down(&device->mutex);
+  WRITE_ONCE(device->disconnected, true);
+  quantis_devices[slot] = NULL;
+  quantis_pci_cards_count--;
+  up(&device->mutex);
+  up(&quantis_mutex);
+
+  /* Existing file operations must finish before MMIO teardown. */
+  down(&device->mutex);
+  iounmap(device->regs);
+  device->regs = NULL;
+  up(&device->mutex);
+
+  /*
+   * Keep the slot reserved: registration may have briefly
+   * exposed the cdev to userspace.
+   */
+  pci_release_regions(pdev);
+  pci_disable_device(pdev);
+  put_device(&device->chardev);
+  return status;
+
+err_regions:
+  pci_release_regions(pdev);
+err_disable:
+  pci_disable_device(pdev);
+err_device:
+  put_device(&device->chardev);
+err_slot:
+  down(&quantis_mutex);
+  quantis_slots_reserved[slot] = false;
+  up(&quantis_mutex);
+  return status;
 }
 
 
-/**
- *
- */
 void DEV_EXIT quantis_pci_remove(struct pci_dev* pdev)
 {
-  int i;
-  quantis_pci_device* device = NULL;
+  quantis_pci_device *device = pci_get_drvdata(pdev);
+  unsigned int slot;
 
-  down(&quantis_mutex);
-
-  /* Search device to remove */
-  for(i = 0; i < QUANTIS_PCI_MAX_CARDS; i++)
-  {
-    if((quantis_devices[i]) && (quantis_devices[i]->pci_dev_irq == pdev->irq))
-    {
-      device = quantis_devices[i];
-    }
-  }
-
-  if (device == NULL)
-  {
-    QUANTIS_ERROR("Unable to remove unknown device");
+  if (!device) {
+    QUANTIS_ERROR("Unable to remove unknown PCI device");
     return;
   }
 
-  /* unmap bus memory from CPU space */
-  iounmap(device->regs);
+  slot = device->device_number;
 
-  /* Release reserved PCI I/O and memory resources */
-  pci_release_regions(pdev);
-
-  /* Disable PCI device after use */
-  pci_disable_device(pdev);
-
-  /* remove the cdev */
-  cdev_del(&device->cdev);
-
-  /* release I/O region */
-  device_destroy(quantis_class, MKDEV(MAJOR(quantis_dev_number), device->device_number));
-
-  /* Release per-device structure */
-  kfree(device);
-
+  /* Prevent new opens while retiring this device. */
+  down(&quantis_mutex);
+  down(&device->mutex);
+  WRITE_ONCE(device->disconnected, true);
+  quantis_devices[slot] = NULL;
   quantis_pci_cards_count--;
-
+  up(&device->mutex);
   up(&quantis_mutex);
 
-  QUANTIS_INFO("Driver manages %d card(s)", quantis_pci_cards_count);
+  cdev_device_del(&device->cdev, &device->chardev);
+
+  /* Wait for active hardware operations before unmapping. */
+  down(&device->mutex);
+  iounmap(device->regs);
+  device->regs = NULL;
+  up(&device->mutex);
+
+  pci_release_regions(pdev);
+  pci_disable_device(pdev);
+  pci_set_drvdata(pdev, NULL);
+
+  /* Existing open descriptors retain their device references. */
+  put_device(&device->chardev);
+
+  QUANTIS_INFO("Removed card #%u", slot);
 }
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0))
