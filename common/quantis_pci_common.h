@@ -271,20 +271,23 @@ static inline void quantis_flush_fifo(quantis_pci_device* qdev)
 static inline int quantis_rng_error(quantis_pci_device* qdev)
 {
   quantis_register_value reg = quantis_reg_get(qdev, MX_SR);
-  quantis_module_mask test   = reg2mask(reg, MX_TM);
+  quantis_module_mask test = reg2mask(reg, MX_TM);
   quantis_module_mask status = reg2mask(reg, MX_HST);
   quantis_module_mask enable = reg2mask(reg, MX_SEN);
+  quantis_module_mask present = reg2mask(reg, MX_HEN);
 
-  if (test)
+  /* Reject test mode, absent modules and unhealthy enabled modules. */
+  if (test || !enable || (enable & ~present) ||
+      (enable & status) != enable)
   {
-    return 0;
+    pr_warn_ratelimited(
+        "quantis_pci: health rejected: raw=0x%08x test=0x%x enabled=0x%x present=0x%x healthy=0x%x\n",
+        reg, test, enable, present, status);
+    return 1;
   }
-  else
-  {
-    return (enable & status) == 0;
-  }
+
+  return 0;
 }
-
 
 /**
  * Returns the number of bytes of random data available in the FIFO.
