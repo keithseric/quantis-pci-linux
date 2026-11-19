@@ -68,6 +68,7 @@
 
 #include <linux/fs.h>
 #include <linux/capability.h>
+#include <linux/compat.h>
 #include <linux/cdev.h>
 #include <linux/init.h>
 #include <linux/ioport.h>
@@ -362,6 +363,13 @@ static struct file_operations quantis_fops =
   /*.llseek   =   quantis_llseek,*/   /* Seek method */
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36))
 	.unlocked_ioctl =	quantis_unlocked_ioctl,
+#ifdef CONFIG_COMPAT
+	/*
+	 * All IOCTL arguments are pointers to
+	 * 32-bit integers or unused.
+	 */
+	.compat_ioctl = compat_ptr_ioctl,
+#endif
 #else
  .ioctl		=		quantis_ioctl,    /* Ioctl method */
 #endif
