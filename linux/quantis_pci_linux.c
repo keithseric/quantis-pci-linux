@@ -69,6 +69,10 @@
 #include <linux/fs.h>
 #include <linux/capability.h>
 #include <linux/compat.h>
+#include <linux/delay.h>
+#include <linux/ktime.h>
+#include <linux/sched/signal.h>
+#include <linux/errno.h>
 #include <linux/cdev.h>
 #include <linux/init.h>
 #include <linux/ioport.h>
@@ -488,11 +492,12 @@ ssize_t quantis_read(struct file* file,
   bytes_read = quantis_rng_read(device,
                                 device->buffer,
                                 length);
-  if (bytes_read < 0)
-  {
-    bytes_read = -EIO;
-  }
-  else
+  /*
+   * Preserve hardware errors, FIFO timeouts and signal
+   * interruptions. Do not expose partially acquired data
+   * when the hardware acquisition reports an error.
+   */
+  if (bytes_read >= 0)
   {
     if (__copy_to_user(buffer, device->buffer, bytes_read))
     {

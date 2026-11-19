@@ -175,6 +175,12 @@ typedef uint32_t quantis_register_value;
  */
 #define QUANTIS_FIFO_SIZE     4096
 
+#ifdef __linux__
+#define QUANTIS_FIFO_TIMEOUT_MS  100
+#define QUANTIS_FIFO_POLL_MIN_US 50
+#define QUANTIS_FIFO_POLL_MAX_US 100
+#endif
+
 #define QUANTIS_FIFO_EMPTY    1
 #define QUANTIS_FIFO_FL1      (1 << 1)
 #define QUANTIS_FIFO_FL2      (1 << 2)
@@ -316,15 +322,7 @@ static inline int quantis_rng_fifo_bytes(quantis_pci_device* qdev)
   quantis_register_value status = quantis_get_fifo_status(qdev);
 
   /* */
-#ifdef __linux__
-  static int once = 1;
 
-  if (once)
-  {
-      schedule();
-      once = 0;
-  }
-#endif
 
   if (status & QUANTIS_FIFO_FULL)
   {
@@ -355,6 +353,39 @@ static inline int quantis_rng_fifo_bytes(quantis_pci_device* qdev)
  * @return the number of bytes of random data available in the FIFO or a 
  * negative value on timeout.
  */
+#ifdef __linux__
+
+static inline int quantis_rng_wait_fifo(quantis_pci_device* qdev)
+{
+  const ktime_t deadline =
+      ktime_add_ms(ktime_get(), QUANTIS_FIFO_TIMEOUT_MS);
+
+  for (;;)
+  {
+    int available_bytes;
+
+    if (signal_pending(current))
+      return -ERESTARTSYS;
+
+    if (ktime_compare(ktime_get(), deadline) >= 0)
+      return -ETIMEDOUT;
+
+    available_bytes = quantis_rng_fifo_bytes(qdev);
+
+    if (available_bytes > 0)
+      return available_bytes;
+
+    /*
+     * Hardware access is serialized by the caller's
+     * sleepable per-device semaphore.
+     */
+    usleep_range(QUANTIS_FIFO_POLL_MIN_US,
+                 QUANTIS_FIFO_POLL_MAX_US);
+  }
+}
+
+#else
+
 static inline int quantis_rng_wait_fifo(quantis_pci_device* qdev)
 {
   unsigned int timeout = 10000;
@@ -390,6 +421,8 @@ static inline int quantis_rng_wait_fifo(quantis_pci_device* qdev)
   /* Wait timed out*/
   return -1;
 }
+
+#endif
 
 
 /**
@@ -486,8 +519,12 @@ static inline int quantis_rng_read(quantis_pci_device* qdev,
   /* Verify at least one module is enabled and everything works correctly */
   if (quantis_rng_error(qdev))
   {
-    /* Module status error (is at least one module enabled? */
+    /* Reject data from an unhealthy hardware source. */
+#ifdef __linux__
+    return -EIO;
+#else
     return -1;
+#endif
   }
 
   /* Read random bytes */
@@ -497,8 +534,12 @@ static inline int quantis_rng_read(quantis_pci_device* qdev,
     int available_bytes = quantis_rng_wait_fifo(qdev);
     if (available_bytes < 0)
     {
-      /* Timeout while waiting random bytes */
+      /* Propagate the FIFO acquisition error. */
+#ifdef __linux__
+      return available_bytes;
+#else
       return -2;
+#endif
     }
     else if (available_bytes > (length - read_bytes))
     {
