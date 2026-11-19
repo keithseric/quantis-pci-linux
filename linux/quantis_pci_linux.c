@@ -73,6 +73,9 @@
 #include <linux/ktime.h>
 #include <linux/sched/signal.h>
 #include <linux/errno.h>
+#include <linux/slab.h>
+#include <linux/mm.h>
+#include <linux/uaccess.h>
 #include <linux/cdev.h>
 #include <linux/init.h>
 #include <linux/ioport.h>
@@ -153,6 +156,8 @@ struct class* quantis_class;
 #define PCI_BASE_ADDRESS_REGISTER0        0
 #define PCI_BASE_ADDRESS_REGISTER1        1
 
+#define QUANTIS_MAX_READ_BUFFERS          8
+
 /**
  * Quantis PCI per-device structure
  */
@@ -161,7 +166,7 @@ struct quantis_pci_device
   unsigned char pci_dev_irq;                         /* irq of this device */
   void __iomem* regs;                                   /* BUS address in CPU space */
   struct semaphore mutex;                            /* device's mutex */
-  unsigned char buffer[QUANTIS_DEVICE_BUFFER_SIZE];  /* random data's buffer */
+  struct semaphore read_slots;  /* Bounded private acquisition buffers */
   u_int32_t device_number;                           /* internal number of this device */
   struct cdev cdev;                                  /* char device structure */
   struct pci_dev *pdev;                              /* associated PCI device */
@@ -247,19 +252,8 @@ void quantis_reg_set(quantis_pci_device* qdev, quantis_register reg, quantis_reg
 //Get Pci bus device Id
 u_int32_t quantis_get_pci_bus_device_id(quantis_pci_device* qdev)
 {
-  int pciBusDeviceId;
-  char pciDevice[64];
-  char pciBusDeviceFunctionName[64];
-  
-  memset(pciBusDeviceFunctionName, 0, sizeof(pciBusDeviceFunctionName));
-  memset(pciDevice, 0, sizeof(pciDevice));
-  
-  sprintf(pciBusDeviceFunctionName, "%s", qdev->pciBusName);
-  
-  memcpy(pciDevice, &pciBusDeviceFunctionName[5], 2);    
-  sscanf(pciDevice, "%x", &pciBusDeviceId);  
-  
-  return pciBusDeviceId;
+  /* Preserve the legacy IOCTL's PCI bus-number semantics. */
+  return qdev->pdev->bus->number;
 }
 
 
@@ -459,13 +453,14 @@ ssize_t quantis_read(struct file* file,
 {
   int bytes_read;
   unsigned long uncopied;
+  unsigned char *acquired;
   bool nonblock = !!(READ_ONCE(file->f_flags) & O_NONBLOCK);
   quantis_pci_device* device = file->private_data;
 
   if (!length)
     return 0;
 
-  if (!device)
+  if (!device || READ_ONCE(device->disconnected))
     return -ENODEV;
 
   if (length > QUANTIS_DEVICE_BUFFER_SIZE)
@@ -474,32 +469,77 @@ ssize_t quantis_read(struct file* file,
   if (!access_ok(buffer, length))
     return -EFAULT;
 
+  /*
+   * Bound memory consumption before allocating a private
+   * acquisition buffer.
+   */
   if (nonblock)
   {
-    if (down_trylock(&device->mutex))
+    if (down_trylock(&device->read_slots))
       return -EAGAIN;
   }
   else
   {
-    if (down_interruptible(&device->mutex))
+    if (down_interruptible(&device->read_slots))
       return -ERESTARTSYS;
   }
 
   if (READ_ONCE(device->disconnected))
   {
-    up(&device->mutex);
-    return -ENODEV;
+    bytes_read = -ENODEV;
+    goto out_slot;
   }
 
-  bytes_read = quantis_rng_read(device,
-                                device->buffer,
-                                length,
-                                nonblock);
+  /*
+   * Nonblocking readers avoid direct reclaim.
+   * Blocking readers may use virtually contiguous memory.
+   */
+  if (nonblock)
+    acquired = kmalloc(length, GFP_NOWAIT | __GFP_ACCOUNT);
+  else
+    acquired = kvmalloc(length, GFP_KERNEL_ACCOUNT);
+
+  if (!acquired)
+  {
+    bytes_read = nonblock ? -EAGAIN : -ENOMEM;
+    goto out_slot;
+  }
+
+  if (nonblock)
+  {
+    if (down_trylock(&device->mutex))
+    {
+      bytes_read = -EAGAIN;
+      goto out_buffer;
+    }
+  }
+  else
+  {
+    if (down_interruptible(&device->mutex))
+    {
+      bytes_read = -ERESTARTSYS;
+      goto out_buffer;
+    }
+  }
+
+  if (READ_ONCE(device->disconnected))
+    bytes_read = -ENODEV;
+  else
+    bytes_read = quantis_rng_read(device,
+                                  acquired,
+                                  length,
+                                  nonblock);
+
+  /*
+   * Hardware acquisition is complete. Userspace faults
+   * must not hold the hardware semaphore.
+   */
+  up(&device->mutex);
 
   if (bytes_read > 0)
   {
     uncopied = copy_to_user(buffer,
-                            device->buffer,
+                            acquired,
                             bytes_read);
 
     if (uncopied == bytes_read)
@@ -508,13 +548,11 @@ ssize_t quantis_read(struct file* file,
       bytes_read -= uncopied;
   }
 
-  /*
-   * Do not retain acquired random data in the reusable
-   * device buffer after a read completes or fails.
-   */
-  memzero_explicit(device->buffer, length);
+out_buffer:
+  kvfree_sensitive(acquired, length);
 
-  up(&device->mutex);
+out_slot:
+  up(&device->read_slots);
 
   return bytes_read;
 }
@@ -548,6 +586,9 @@ int quantis_ioctl(struct inode* inode,
                   unsigned long arg)
 {
   int status = 0;
+  u_int32_t input = 0;
+  u_int32_t output = 0;
+  bool return_value = false;
   quantis_pci_device* device = file->private_data;
 
   if (!device)
@@ -588,6 +629,17 @@ int quantis_ioctl(struct inode* inode,
       return -ENOTTY;
   }
 
+  /*
+   * Fetch userspace arguments after authorization,
+   * but before acquiring the hardware semaphore.
+   */
+  if (cmd == QUANTIS_IOCTL_ENABLE_MODULE ||
+      cmd == QUANTIS_IOCTL_DISABLE_MODULE)
+  {
+    if (get_user(input, (u_int32_t __user *)arg))
+      return -EFAULT;
+  }
+
   if (down_interruptible(&device->mutex))
     return -ERESTARTSYS;
 
@@ -602,21 +654,23 @@ int quantis_ioctl(struct inode* inode,
   {
     case QUANTIS_IOCTL_GET_DRIVER_VERSION:
     {
-      status = put_user((u_int32_t)QUANTIS_PCI_DRIVER_VERSION, (u_int32_t __user *)arg);
+      output = (u_int32_t)QUANTIS_PCI_DRIVER_VERSION;
+      return_value = true;
       break;
     }
 
     case QUANTIS_IOCTL_GET_CARD_COUNT:
     {
-      status = put_user((u_int32_t)READ_ONCE(quantis_pci_cards_count),
-                        (u_int32_t __user *)arg);
+      output = (u_int32_t)READ_ONCE(quantis_pci_cards_count);
+      return_value = true;
       break;
     }
 
     case QUANTIS_IOCTL_GET_BOARD_VERSION:
     {
       u_int32_t version = quantis_rng_version(device);
-      status = put_user(version, (u_int32_t __user *)arg);
+      output = version;
+      return_value = true;
       break;
     }
 
@@ -629,16 +683,14 @@ int quantis_ioctl(struct inode* inode,
     case QUANTIS_IOCTL_GET_MODULES_MASK:
     {
       u_int32_t mask = quantis_rng_modules_mask(device);
-      status = put_user(mask, (u_int32_t __user *)arg);
+      output = mask;
+      return_value = true;
       break;
     }
 
     case QUANTIS_IOCTL_ENABLE_MODULE:
     {
-      u_int32_t modules;
-      status = get_user(modules, (u_int32_t __user *)arg);
-      if (status)
-        break;
+      u_int32_t modules = input;
       if (!modules ||
           (modules & ~quantis_rng_modules_mask(device)))
       {
@@ -652,10 +704,7 @@ int quantis_ioctl(struct inode* inode,
 
     case QUANTIS_IOCTL_DISABLE_MODULE:
     {
-      u_int32_t modules;
-      status = get_user(modules, (u_int32_t __user *)arg);
-      if (status)
-        break;
+      u_int32_t modules = input;
       if (!modules ||
           (modules & ~quantis_rng_modules_mask(device)))
       {
@@ -670,20 +719,23 @@ int quantis_ioctl(struct inode* inode,
     case QUANTIS_IOCTL_GET_MODULES_STATUS:
     {
       u_int32_t modules_status = quantis_rng_modules_status(device);
-      status = put_user(modules_status, (u_int32_t __user *)arg);
+      output = modules_status;
+      return_value = true;
       break;
     }
 
     case QUANTIS_IOCTL_GET_PCI_BUS_DEVICE_ID:
     {
       u_int32_t deviceId = quantis_get_pci_bus_device_id(device);
-      status = put_user((u_int32_t)deviceId, (u_int32_t __user *)arg);
+      output = (u_int32_t)deviceId;
+      return_value = true;
       break;
     }    
     
     case QUANTIS_IOCTL_GET_AIS31_STARTUP_TESTS_REQUEST_FLAG:
     {      
-      status = put_user((u_int32_t)device->ais31StartupTestsRequestFlag, (u_int32_t __user *)arg);
+      output = (u_int32_t)device->ais31StartupTestsRequestFlag;
+      return_value = true;
       break;
     }    
     
@@ -700,6 +752,9 @@ int quantis_ioctl(struct inode* inode,
   } // switch (cmd)
 
   up(&device->mutex);
+
+  if (!status && return_value)
+    status = put_user(output, (u_int32_t __user *)arg);
 
   return status;
 }
@@ -749,6 +804,7 @@ int DEV_INIT quantis_pci_probe(struct pci_dev* pdev,
   device->device_number = slot;
   device->ais31StartupTestsRequestFlag = 1;
   sema_init(&device->mutex, 1);
+  sema_init(&device->read_slots, QUANTIS_MAX_READ_BUFFERS);
 
   status = dev_set_name(&device->chardev, "%s%d",
                         QUANTIS_PCI_DEVICE_NAME, slot);
@@ -808,12 +864,15 @@ int DEV_INIT quantis_pci_probe(struct pci_dev* pdev,
   return 0;
 
 err_publish:
+  /*
+   * Unpublish before waiting for hardware operations.
+   * Never hold the global semaphore while waiting for
+   * a per-device semaphore.
+   */
   down(&quantis_mutex);
-  down(&device->mutex);
   WRITE_ONCE(device->disconnected, true);
   quantis_devices[slot] = NULL;
   quantis_pci_cards_count--;
-  up(&device->mutex);
   up(&quantis_mutex);
 
   /* Existing file operations must finish before MMIO teardown. */
@@ -858,12 +917,15 @@ void DEV_EXIT quantis_pci_remove(struct pci_dev* pdev)
   slot = device->device_number;
 
   /* Prevent new opens while retiring this device. */
+  /*
+   * Unpublish before waiting for hardware operations.
+   * Never hold the global semaphore while waiting for
+   * a per-device semaphore.
+   */
   down(&quantis_mutex);
-  down(&device->mutex);
   WRITE_ONCE(device->disconnected, true);
   quantis_devices[slot] = NULL;
   quantis_pci_cards_count--;
-  up(&device->mutex);
   up(&quantis_mutex);
 
   cdev_device_del(&device->cdev, &device->chardev);
