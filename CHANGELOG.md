@@ -1,5 +1,52 @@
 # Modernization changelog
 
+## 18.03.08-linux61.3 - Security and runtime hardening
+
+### Security
+
+- Require writable file descriptors and CAP_SYS_RAWIO for
+  administrative IOCTL operations.
+- Require readable descriptors for diagnostic IOCTL operations.
+- Reject invalid module-selection masks and unknown IOCTLs.
+- Move userspace memory access outside the hardware semaphore.
+- Use bounded, memory-accounted private acquisition buffers.
+- Explicitly erase acquisition buffers before releasing them.
+- Strengthen hardware health checks throughout data acquisition.
+- Separate device publication and hardware removal locking.
+
+### Driver behavior
+
+- Add native 32-bit IOCTL compatibility on supported kernels.
+- Replace legacy busy polling with bounded, sleepable FIFO polling.
+- Propagate meaningful acquisition errors to userspace.
+- Implement nonblocking acquisition behavior.
+- Bound individual read requests to 64 KiB.
+- Bound nonblocking acquisitions to one FIFO batch.
+- Preserve the historical PCI bus-number IOCTL semantics.
+- Improve synchronization between acquisition and device removal.
+
+### Runtime qualification
+
+- Maintain approximately 16 Mbps sustained hardware throughput.
+- Reduce sustained acquisition CPU consumption by approximately
+  8.9 percent in the observed comparative benchmark.
+- Validate up to 16 independent concurrent reader processes.
+- Complete native and 32-bit IOCTL security tests.
+- Complete 1,000 repeated open/read/close cycles.
+- Validate PCI unbinding and rebinding with outstanding descriptors.
+- Confirm disconnected descriptors cannot access a rebound device.
+- Complete repeated restoration of the previous production driver.
+
+### Packaging
+
+- Increment the DKMS package version to 18.03.08-linux61.3.
+- Update installation, architecture, security and validation
+  documentation.
+- Preserve upstream attribution and licensing.
+
+The driver ABI version remains 2.9 (integer 29).
+The package version identifies this Linux modernization release.
+
 ## 18.03.08-linux61.2 - Initial publication candidate
 
 Based on ID Quantique Quantis v18.03.08.

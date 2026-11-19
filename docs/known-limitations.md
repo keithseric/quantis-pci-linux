@@ -55,9 +55,19 @@ cryptographic unpredictability, or quantum origin.
 
 ## Device lifecycle
 
-Additional concurrent access, hot-removal and fault
-injection testing would improve confidence in lifecycle
-and failure-handling behavior.
+Runtime tests have validated up to 16 concurrent reader
+processes and software PCI unbinding and rebinding with
+outstanding file descriptors.
+
+Removal raced against active MMIO acquisition, surprise physical
+removal, prolonged stress testing and fault injection remain
+unqualified.
+
+Minor numbers are reserved until module unload. Repeated PCI
+rebind operations consume the available device slots. Applications
+must not assume that a rebound device retains its previous name.
+
+Suspend and resume behavior is not qualified.
 
 Do not remove PCI hardware physically from an energized
 system unless the platform explicitly supports hot-plug.
@@ -67,3 +77,54 @@ system unless the platform explicitly supports hot-plug.
 Review the source, hardware documentation, operating
 environment and application requirements before using
 the driver for security-critical workloads.
+
+## Acquisition timing and resource limits
+
+Hardware acquisition deadlines do not include time spent waiting
+for admission, waiting for the hardware semaphore or copying
+acquired bytes into userspace memory.
+
+The driver does not provide a hard real-time read deadline.
+
+Private acquisition buffers prevent userspace memory faults from
+holding the hardware semaphore. Processes stalled in userspace
+memory copies can nevertheless retain admission slots and delay
+additional readers.
+
+## Hardware health limitations
+
+Health checks use sampled hardware register state. They cannot
+establish that every transient hardware failure is observed.
+
+The diagnostic IOCTLs expose hardware-reported status and should
+not be interpreted as independent hardware attestation.
+
+Diagnostic register validity checks are not equivalent to the
+stricter checks performed during acquisition. Some invalid
+register states can produce misleading diagnostic results.
+
+FIFO error-bit semantics remain unresolved. Additional fault
+injection and recovery testing is required.
+
+## Performance
+
+Acquisition remains polling-based and uses individual MMIO FIFO
+register reads. Sustained acquisition can consume a substantial
+fraction of one CPU.
+
+The observed linux61.3 benchmark maintained rated throughput
+while reducing CPU utilization from approximately 99.1 percent
+to 90.3 percent of one logical CPU.
+
+The original engineering target of 85 percent was not achieved.
+
+Small read requests incur additional overhead from the stronger
+health checks and private buffer management.
+
+## Validation scope
+
+Runtime qualification of linux61.3 has focused on one Quantis
+PCI 16 Mbps card under Linux 6.1.0-54-amd64.
+
+Results do not establish compatibility with every Quantis model,
+kernel series, architecture or operating environment.

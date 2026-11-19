@@ -1,6 +1,6 @@
 # Hardware validation
 
-## Completed operational validation
+## Historical operational validation (before linux61.3)
 
 The development driver has undergone the following
 tests on physical hardware:
@@ -52,7 +52,7 @@ certification or an independent entropy assessment.
 The statistical implementation still requires comparison
 against reference statistical testing software.
 
-## Validation scope
+## Initial publication validation scope (linux61.2)
 
 The production development source and publication
 source have been compared, with subsequent differences
@@ -61,7 +61,7 @@ in licensing declarations and publication metadata.
 The publication source passed an isolated compilation
 test on 2026-11-17.
 
-## Publication compilation validation
+## Initial publication compilation validation (linux61.2)
 
 | Property | Result |
 |---|---|
@@ -92,7 +92,7 @@ locally deployed development DKMS package.
 Installation and automatic DKMS rebuilds of the
 publication package remain to be validated separately.
 
-## Outstanding validation
+## Outstanding validation after initial publication
 
 - Broader kernel compatibility
 - Additional Quantis hardware models
@@ -102,3 +102,161 @@ publication package remain to be validated separately.
 - Fault injection
 - Independent source review
 - Formal statistical and entropy evaluation
+
+## linux61.3 runtime qualification
+
+Qualification was performed on 2026-11-19 using a physical
+ID Quantique Quantis PCI 16 Mbps device.
+
+### Test environment
+
+| Property | Value |
+|---|---|
+| Distribution | Debian 12 |
+| Kernel | 6.1.0-54-amd64 |
+| Architecture | x86-64 |
+| Logical CPUs | 2 |
+| PCI vendor/device | 179a:0001 |
+| PCI revision | 0x50 |
+| Board core version | 0x040a1201 |
+| RNG modules present | 4 of 4 |
+| RNG modules reported healthy | 4 of 4 |
+| Qualified driver source commit | 516616feb0992a952a60e8f29968353c6a7a9e12 |
+| Driver ABI version | 29 |
+
+### Performance comparison
+
+The earlier production Linux modernization package
+(18.03.08-linux61.1) was compared against the hardened
+linux61.3 candidate.
+
+| Metric | Earlier driver | Hardened candidate |
+|---|---:|---:|
+| Sustained throughput | 16.0016 Mbps | 16.0002 Mbps |
+| Sustained CPU utilization | 99.078% | 90.301% |
+| Concurrent thread throughput | 15.764 Mbps | 15.978 Mbps |
+| 1-byte median acquisition latency | 7.014 us | 14.967 us |
+| 32-byte median acquisition latency | 19.315 us | 27.286 us |
+| 1 KiB median acquisition latency | 511.265 us | 465.507 us |
+| 4 KiB median acquisition latency | 2047.423 us | 2060.802 us |
+| 64 KiB median acquisition latency | 32.766 ms | 32.752 ms |
+| Unexpected acquisition errors | 0 | 0 |
+| Unexpected short reads | 0 | 0 |
+
+CPU utilization is expressed relative to one logical CPU.
+
+The measured sustained CPU reduction was approximately 8.86
+percent. The original engineering target of no more than 85
+percent of one logical CPU was not achieved.
+
+The earlier driver was measured with application services
+running. The candidate was measured with those services stopped.
+These differing background workloads limit the strength of
+comparative performance conclusions.
+
+### Independent reader processes
+
+Each process acquired 1 MiB using sixteen 64 KiB reads.
+
+| Processes | Aggregate Mbps | Aggregate CPU | Representative median latency | Maximum latency |
+|---:|---:|---:|---:|---:|
+| 1 | 15.9300 | 90.00% | 32.75 ms | 32.82 ms |
+| 4 | 15.9607 | 90.83% | 131.03 ms | 132.61 ms |
+| 8 | 15.9708 | 93.25% | 262.14 ms | 265.95 ms |
+| 12 | 15.9901 | 92.09% | 393.22 ms | 395.20 ms |
+| 16 | 15.9894 | 91.80% | 524.28 ms | 527.22 ms |
+
+All processes completed their acquisitions. No unexpected short
+reads, acquisition errors or worker timeouts were observed.
+
+The combined process workload acquired 41 MiB through 656
+blocking read calls.
+
+An additional 1,000 open/read/close cycles completed successfully.
+The final module reference count was zero.
+
+### Native IOCTL security
+
+| Test | Expected behavior | Result |
+|---|---|---|
+| Administrative request on read-only descriptor | EBADF | Pass |
+| Administrative request on unprivileged writable descriptor | EPERM | Pass |
+| Invalid module-selection mask | EINVAL | Pass |
+| Invalid userspace input pointer | EFAULT | Pass |
+| Invalid userspace output pointer | EFAULT | Pass |
+| Unknown command | ENOTTY | Pass |
+| Unprivileged diagnostic access | Success | Pass |
+| Oversized blocking acquisition | 64 KiB maximum | Pass |
+| Zero-length read | Zero bytes | Pass |
+
+Administrative authorization was tested for reset, module enable,
+module disable and AIS31 request-flag modification.
+
+The unprivileged writable-descriptor test used an inherited
+descriptor without changing device-node permissions.
+
+### Nonblocking acquisition
+
+A sequence of 1,000 nonblocking read attempts produced:
+
+- 836 successful acquisitions.
+- 164 EAGAIN responses.
+- Zero unexpected errors.
+
+Successful acquisitions did not exceed one 4096-byte FIFO batch.
+
+### Native 32-bit compatibility
+
+A statically linked ELF32 i386 executable invoked Linux system
+calls directly, without a 32-bit C library.
+
+All ten IOCTL assertions passed:
+
+- Seven diagnostic queries.
+- Invalid output pointer handling.
+- Unknown command handling.
+- Read-only administrative authorization.
+
+### PCI device lifecycle
+
+Software PCI unbinding was performed while five descriptors
+remained open, including one nonblocking descriptor.
+
+The original character device was removed successfully.
+All old descriptors returned ENODEV for subsequent reads and
+diagnostic queries.
+
+PCI rebinding registered a new device instance with a new minor
+number. Old descriptors remained disconnected.
+
+The new device passed diagnostic queries, blocking reads,
+device permission checks and unprivileged acquisition tests.
+
+All outstanding descriptors were released, with the final
+module reference count returning to zero.
+
+No kernel faults were observed in the collected qualification
+kernel logs.
+
+### Production restoration
+
+The earlier production driver was restored following each
+controlled qualification session.
+
+Five production restoration sessions completed successfully.
+The installed production DKMS module remained unchanged.
+
+### Remaining qualification
+
+- Permanent installation and boot validation of linux61.3.
+- Automatic DKMS rebuilding across kernel updates.
+- Broader kernel and hardware compatibility.
+- Multiple-card operation.
+- Removal raced against active acquisition.
+- Physical surprise removal.
+- Hardware fault injection.
+- Long-duration resource and memory testing.
+- Independent security and entropy assessment.
+
+Acquisition success, reported health and statistical measurements
+do not establish cryptographic certification or guaranteed entropy.

@@ -47,3 +47,26 @@ Useful compatibility reports include:
 Remove private hostnames, usernames, filesystem paths,
 network addresses and unrelated device information
 before posting diagnostic output.
+
+## linux61.3 runtime qualification
+
+| Property | Tested configuration |
+|---|---|
+| Hardware | ID Quantique Quantis PCI 16 Mbps |
+| PCI vendor/device ID | 179a:0001 |
+| PCI revision | 0x50 |
+| Board core version | 0x040a1201 |
+| Detected RNG modules | 4 |
+| Host architecture | x86-64 |
+| Kernel | Linux 6.1.0-54-amd64 |
+| Distribution | Debian 12 |
+| Native userspace | 64-bit |
+| Compatible userspace | 32-bit i386 |
+| IA32 compatibility IOCTL tests | Pass |
+| Software PCI unbind/rebind | Pass |
+
+This table records a tested configuration, not a comprehensive
+hardware compatibility matrix.
+
+Other Quantis models and multiple-card operation require
+additional hardware validation.

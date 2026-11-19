@@ -138,3 +138,27 @@ the entropy quality of every generated value.
 
 Review the known limitations before deploying this driver
 in security-critical environments.
+
+## Security and runtime hardening release
+
+Version 18.03.08-linux61.3 introduces administrative IOCTL
+authorization, native 32-bit compatibility, bounded hardware
+acquisition deadlines, nonblocking reads, private acquisition
+buffers and stronger device lifecycle synchronization.
+
+Runtime qualification on an ID Quantique Quantis PCI 16 Mbps
+card under Linux 6.1 demonstrated:
+
+- Approximately 16 Mbps sustained acquisition throughput.
+- Approximately 8.9 percent lower sustained acquisition CPU
+  consumption in the observed comparative benchmark.
+- Successful acquisition with up to 16 independent reader processes.
+- Native and 32-bit IOCTL authorization and error handling.
+- Correct descriptor isolation following PCI unbinding and rebinding.
+
+See [validation](docs/validation.md) for measured results and
+[known limitations](docs/known-limitations.md) for deployment
+considerations.
+
+The driver remains experimental and has not undergone a formal
+independent security or entropy assessment.

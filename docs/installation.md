@@ -44,7 +44,7 @@ The modified module declares GPL v2 licensing.
 The included DKMS configuration uses:
 
 - Package: quantis-pci
-- Version: 18.03.08-linux61.2
+- Version: 18.03.08-linux61.3
 - Module: quantis_pci
 
 Check for an existing installation:
@@ -64,16 +64,16 @@ directory.
 
 Run from the repository root:
 
-    sudo mkdir /usr/src/quantis-pci-18.03.08-linux61.2
+    sudo mkdir /usr/src/quantis-pci-18.03.08-linux61.3
 
-    sudo cp -a common linux dkms.conf \
-        /usr/src/quantis-pci-18.03.08-linux61.2/
+    git archive HEAD common linux dkms.conf | \
+        sudo tar -xf - -C /usr/src/quantis-pci-18.03.08-linux61.3
 
-    sudo dkms add -m quantis-pci -v 18.03.08-linux61.2
+    sudo dkms add -m quantis-pci -v 18.03.08-linux61.3
 
-    sudo dkms build -m quantis-pci -v 18.03.08-linux61.2
+    sudo dkms build -m quantis-pci -v 18.03.08-linux61.3
 
-    sudo dkms install -m quantis-pci -v 18.03.08-linux61.2
+    sudo dkms install -m quantis-pci -v 18.03.08-linux61.3
 
 Load the installed driver:
 
@@ -166,7 +166,7 @@ Stop all applications using the Quantis device first.
 
     sudo dkms remove \
         -m quantis-pci \
-        -v 18.03.08-linux61.2 \
+        -v 18.03.08-linux61.3 \
         --all
 
 Review and remove any project-specific module-loading
