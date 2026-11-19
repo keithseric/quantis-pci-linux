@@ -67,6 +67,7 @@
 
 
 #include <linux/fs.h>
+#include <linux/capability.h>
 #include <linux/cdev.h>
 #include <linux/init.h>
 #include <linux/ioport.h>
@@ -530,6 +531,41 @@ int quantis_ioctl(struct inode* inode,
   if (!device)
     return -ENODEV;
 
+  /*
+   * Read access permits diagnostics, not hardware administration.
+   * Require both a writable descriptor and CAP_SYS_RAWIO for
+   * operations that change hardware or startup-test state.
+   */
+  switch (cmd)
+  {
+    case QUANTIS_IOCTL_RESET_BOARD:
+    case QUANTIS_IOCTL_ENABLE_MODULE:
+    case QUANTIS_IOCTL_DISABLE_MODULE:
+    case QUANTIS_IOCTL_CLEAR_AIS31_STARTUP_TESTS_REQUEST_FLAG:
+      if (!(file->f_mode & FMODE_WRITE))
+        return -EBADF;
+
+      if (!capable(CAP_SYS_RAWIO))
+        return -EPERM;
+
+      break;
+
+    case QUANTIS_IOCTL_GET_DRIVER_VERSION:
+    case QUANTIS_IOCTL_GET_CARD_COUNT:
+    case QUANTIS_IOCTL_GET_BOARD_VERSION:
+    case QUANTIS_IOCTL_GET_MODULES_MASK:
+    case QUANTIS_IOCTL_GET_MODULES_STATUS:
+    case QUANTIS_IOCTL_GET_PCI_BUS_DEVICE_ID:
+    case QUANTIS_IOCTL_GET_AIS31_STARTUP_TESTS_REQUEST_FLAG:
+      if (!(file->f_mode & FMODE_READ))
+        return -EBADF;
+
+      break;
+
+    default:
+      return -ENOTTY;
+  }
+
   if (down_interruptible(&device->mutex))
     return -ERESTARTSYS;
 
@@ -544,21 +580,21 @@ int quantis_ioctl(struct inode* inode,
   {
     case QUANTIS_IOCTL_GET_DRIVER_VERSION:
     {
-      status = put_user((u_int32_t)QUANTIS_PCI_DRIVER_VERSION, (u_int32_t*)arg);
+      status = put_user((u_int32_t)QUANTIS_PCI_DRIVER_VERSION, (u_int32_t __user *)arg);
       break;
     }
 
     case QUANTIS_IOCTL_GET_CARD_COUNT:
     {
       status = put_user((u_int32_t)READ_ONCE(quantis_pci_cards_count),
-                        (u_int32_t*)arg);
+                        (u_int32_t __user *)arg);
       break;
     }
 
     case QUANTIS_IOCTL_GET_BOARD_VERSION:
     {
       u_int32_t version = quantis_rng_version(device);
-      status = put_user(version, (u_int32_t *)arg);
+      status = put_user(version, (u_int32_t __user *)arg);
       break;
     }
 
@@ -571,16 +607,23 @@ int quantis_ioctl(struct inode* inode,
     case QUANTIS_IOCTL_GET_MODULES_MASK:
     {
       u_int32_t mask = quantis_rng_modules_mask(device);
-      status = put_user(mask, (u_int32_t*)arg);
+      status = put_user(mask, (u_int32_t __user *)arg);
       break;
     }
 
     case QUANTIS_IOCTL_ENABLE_MODULE:
     {
       u_int32_t modules;
-      status = get_user(modules, (u_int32_t*)arg);
+      status = get_user(modules, (u_int32_t __user *)arg);
       if (status)
         break;
+      if (!modules ||
+          (modules & ~quantis_rng_modules_mask(device)))
+      {
+        status = -EINVAL;
+        break;
+      }
+
       quantis_rng_enable_modules(device, modules);
       break;
     }
@@ -588,9 +631,16 @@ int quantis_ioctl(struct inode* inode,
     case QUANTIS_IOCTL_DISABLE_MODULE:
     {
       u_int32_t modules;
-      status = get_user(modules, (u_int32_t*)arg);
+      status = get_user(modules, (u_int32_t __user *)arg);
       if (status)
         break;
+      if (!modules ||
+          (modules & ~quantis_rng_modules_mask(device)))
+      {
+        status = -EINVAL;
+        break;
+      }
+
       quantis_rng_disable_modules(device, modules);
       break;
     }
@@ -598,20 +648,20 @@ int quantis_ioctl(struct inode* inode,
     case QUANTIS_IOCTL_GET_MODULES_STATUS:
     {
       u_int32_t modules_status = quantis_rng_modules_status(device);
-      status = put_user(modules_status, (u_int32_t*)arg);
+      status = put_user(modules_status, (u_int32_t __user *)arg);
       break;
     }
 
     case QUANTIS_IOCTL_GET_PCI_BUS_DEVICE_ID:
     {
       u_int32_t deviceId = quantis_get_pci_bus_device_id(device);
-      status = put_user((u_int32_t)deviceId, (u_int32_t*)arg);
+      status = put_user((u_int32_t)deviceId, (u_int32_t __user *)arg);
       break;
     }    
     
     case QUANTIS_IOCTL_GET_AIS31_STARTUP_TESTS_REQUEST_FLAG:
     {      
-      status = put_user((u_int32_t)device->ais31StartupTestsRequestFlag, (u_int32_t*)arg);
+      status = put_user((u_int32_t)device->ais31StartupTestsRequestFlag, (u_int32_t __user *)arg);
       break;
     }    
     
@@ -623,7 +673,6 @@ int quantis_ioctl(struct inode* inode,
     
     default:
     {
-      QUANTIS_ERROR("IOCTL '%d' is not a valid command", cmd);
       status = -ENOTTY;
     }
   } // switch (cmd)
