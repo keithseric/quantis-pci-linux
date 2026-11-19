@@ -177,6 +177,7 @@ typedef uint32_t quantis_register_value;
 
 #ifdef __linux__
 #define QUANTIS_FIFO_TIMEOUT_MS  100
+#define QUANTIS_READ_TIMEOUT_MS  500
 #define QUANTIS_FIFO_POLL_MIN_US 50
 #define QUANTIS_FIFO_POLL_MAX_US 100
 #endif
@@ -322,6 +323,11 @@ static inline int quantis_rng_fifo_bytes(quantis_pci_device* qdev)
 {
   quantis_register_value status = quantis_get_fifo_status(qdev);
 
+#ifdef __linux__
+  if (status == (quantis_register_value)~0U)
+    return -EIO;
+#endif
+
   if (status & QUANTIS_FIFO_FULL)
   {
     return QUANTIS_FIFO_SIZE;
@@ -353,10 +359,16 @@ static inline int quantis_rng_fifo_bytes(quantis_pci_device* qdev)
  */
 #ifdef __linux__
 
-static inline int quantis_rng_wait_fifo(quantis_pci_device* qdev)
+static inline int quantis_rng_wait_fifo(
+    quantis_pci_device* qdev,
+    ktime_t read_deadline,
+    bool nonblock)
 {
-  const ktime_t deadline =
+  ktime_t deadline =
       ktime_add_ms(ktime_get(), QUANTIS_FIFO_TIMEOUT_MS);
+
+  if (ktime_compare(read_deadline, deadline) < 0)
+    deadline = read_deadline;
 
   for (;;)
   {
@@ -368,22 +380,17 @@ static inline int quantis_rng_wait_fifo(quantis_pci_device* qdev)
     if (ktime_compare(ktime_get(), deadline) >= 0)
       return -ETIMEDOUT;
 
-    /*
-     * Abort if the hardware becomes unhealthy while
-     * waiting for random data.
-     */
     if (quantis_rng_error(qdev))
       return -EIO;
 
     available_bytes = quantis_rng_fifo_bytes(qdev);
 
-    if (available_bytes > 0)
+    if (available_bytes != 0)
       return available_bytes;
 
-    /*
-     * Hardware access is serialized by the caller's
-     * sleepable per-device semaphore.
-     */
+    if (nonblock)
+      return -EAGAIN;
+
     usleep_range(QUANTIS_FIFO_POLL_MIN_US,
                  QUANTIS_FIFO_POLL_MAX_US);
   }
@@ -517,6 +524,97 @@ static inline quantis_module_mask quantis_rng_modules_mask(quantis_pci_device* q
  * @warning if (length > QUANTIS_DEVICE_BUFFER_SIZE), only
  * QUANTIS_DEVICE_BUFFER_SIZE will be filled!
  */
+#ifdef __linux__
+
+static inline int quantis_rng_read(
+    quantis_pci_device* qdev,
+    unsigned char* buffer,
+    int length,
+    bool nonblock)
+{
+  const ktime_t deadline =
+      ktime_add_ms(ktime_get(), QUANTIS_READ_TIMEOUT_MS);
+
+  int read_bytes = 0;
+
+  if (length < 0 ||
+      length > QUANTIS_DEVICE_BUFFER_SIZE)
+    return -EINVAL;
+
+  if (!length)
+    return 0;
+
+  if (quantis_rng_error(qdev))
+    return -EIO;
+
+  while (read_bytes < length)
+  {
+    int available_bytes;
+
+    available_bytes = quantis_rng_wait_fifo(
+        qdev, deadline, nonblock);
+
+    if (available_bytes < 0)
+      return available_bytes;
+
+    if (quantis_rng_error(qdev))
+      return -EIO;
+
+    if (available_bytes > length - read_bytes)
+      available_bytes = length - read_bytes;
+
+    while (available_bytes > 0)
+    {
+      quantis_register_value random_data;
+      int random_data_length = 4;
+
+      if (random_data_length > available_bytes)
+        random_data_length = available_bytes;
+
+      random_data = quantis_reg_get(qdev, FD_RR);
+
+      memcpy(buffer + read_bytes,
+             &random_data,
+             random_data_length);
+
+      available_bytes -= random_data_length;
+      read_bytes += random_data_length;
+    }
+
+    if (quantis_rng_error(qdev))
+      return -EIO;
+
+    if (ktime_compare(ktime_get(), deadline) >= 0)
+      return -ETIMEDOUT;
+
+    /*
+     * A nonblocking read consumes at most one available
+     * FIFO batch without waiting for another refill.
+     */
+    if (nonblock)
+      break;
+
+    if (signal_pending(current))
+      return -ERESTARTSYS;
+
+    /*
+     * Permit scheduling between FIFO batches while
+     * preserving serialization of the hardware stream.
+     */
+    cond_resched();
+  }
+
+  if (quantis_rng_error(qdev))
+    return -EIO;
+
+  if (ktime_compare(ktime_get(), deadline) >= 0)
+    return -ETIMEDOUT;
+
+  return read_bytes;
+}
+
+#else
+
 static inline int quantis_rng_read(quantis_pci_device* qdev,
                                    unsigned char* buffer,
                                    int length)
@@ -609,6 +707,8 @@ static inline int quantis_rng_read(quantis_pci_device* qdev,
 
   return read_bytes;
 }
+
+#endif
 
 /**
  * Only quantis_pci_common's functions are allowed to directly access the 

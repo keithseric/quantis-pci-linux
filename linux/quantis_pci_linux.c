@@ -272,7 +272,7 @@ static int quantis_open(struct inode* inode, struct file* file);
 static int quantis_close(struct inode* inode, struct file* file);
 
 static ssize_t quantis_read(struct file* file,
-                            char* buffer,
+                            char __user* buffer,
                             size_t length,
                             loff_t* ppos);
 
@@ -453,40 +453,38 @@ int quantis_close(struct inode* inode, struct file* file)
  *
  */
 ssize_t quantis_read(struct file* file,
-                     char* buffer,
+                     char __user* buffer,
                      size_t length,
                      loff_t* ppos)
 {
-  int bytes_read = 0;
-  quantis_pci_device* device;
+  int bytes_read;
+  unsigned long uncopied;
+  bool nonblock = !!(READ_ONCE(file->f_flags) & O_NONBLOCK);
+  quantis_pci_device* device = file->private_data;
 
-  /* Zero-length reads must not consume hardware data. */
   if (!length)
     return 0;
 
-  /* Verify if this is a write access. */
-  if(!access_ok(buffer, length))
-  {
-    QUANTIS_ERROR("Write access denied for buffer %p, length 0x%08x",
-                  buffer,
-                  (unsigned int)length);
-    return -EFAULT;
-  }
+  if (!device)
+    return -ENODEV;
 
-  /* Never request more data than the internal buffer can hold. */
   if (length > QUANTIS_DEVICE_BUFFER_SIZE)
-  {
     length = QUANTIS_DEVICE_BUFFER_SIZE;
-  }
 
-  device = file->private_data;
-  if (down_interruptible(&(device->mutex)))
+  if (!access_ok(buffer, length))
+    return -EFAULT;
+
+  if (nonblock)
   {
-    QUANTIS_ERROR("down_interruptible ERROR");
-    return -ERESTARTSYS;
+    if (down_trylock(&device->mutex))
+      return -EAGAIN;
+  }
+  else
+  {
+    if (down_interruptible(&device->mutex))
+      return -ERESTARTSYS;
   }
 
-  /* Removal must not unmap registers during a hardware read. */
   if (READ_ONCE(device->disconnected))
   {
     up(&device->mutex);
@@ -495,21 +493,28 @@ ssize_t quantis_read(struct file* file,
 
   bytes_read = quantis_rng_read(device,
                                 device->buffer,
-                                length);
-  /*
-   * Preserve hardware errors, FIFO timeouts and signal
-   * interruptions. Do not expose partially acquired data
-   * when the hardware acquisition reports an error.
-   */
-  if (bytes_read >= 0)
+                                length,
+                                nonblock);
+
+  if (bytes_read > 0)
   {
-    if (__copy_to_user(buffer, device->buffer, bytes_read))
-    {
+    uncopied = copy_to_user(buffer,
+                            device->buffer,
+                            bytes_read);
+
+    if (uncopied == bytes_read)
       bytes_read = -EFAULT;
-    }
+    else
+      bytes_read -= uncopied;
   }
 
-  up(&(device->mutex));
+  /*
+   * Do not retain acquired random data in the reusable
+   * device buffer after a read completes or fails.
+   */
+  memzero_explicit(device->buffer, length);
+
+  up(&device->mutex);
 
   return bytes_read;
 }
