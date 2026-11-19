@@ -300,7 +300,8 @@ static inline int quantis_rng_error(quantis_pci_device* qdev)
   quantis_module_mask present = reg2mask(reg, MX_HEN);
 
   /* Reject test mode, absent modules and unhealthy enabled modules. */
-  if (test || !enable || (enable & ~present) ||
+  if (reg == (quantis_register_value)~0U ||
+      test || !enable || (enable & ~present) ||
       (enable & status) != enable)
   {
     pr_warn_ratelimited(
@@ -320,9 +321,6 @@ static inline int quantis_rng_error(quantis_pci_device* qdev)
 static inline int quantis_rng_fifo_bytes(quantis_pci_device* qdev)
 {
   quantis_register_value status = quantis_get_fifo_status(qdev);
-
-  /* */
-
 
   if (status & QUANTIS_FIFO_FULL)
   {
@@ -369,6 +367,13 @@ static inline int quantis_rng_wait_fifo(quantis_pci_device* qdev)
 
     if (ktime_compare(ktime_get(), deadline) >= 0)
       return -ETIMEDOUT;
+
+    /*
+     * Abort if the hardware becomes unhealthy while
+     * waiting for random data.
+     */
+    if (quantis_rng_error(qdev))
+      return -EIO;
 
     available_bytes = quantis_rng_fifo_bytes(qdev);
 
@@ -483,8 +488,10 @@ static inline void quantis_rng_disable_modules(quantis_pci_device* qdev, quantis
  */
 static inline quantis_module_mask quantis_rng_modules_status(quantis_pci_device* qdev)
 {
-  return reg2mask(quantis_reg_get(qdev, MX_SR), MX_SEN)
-      &  reg2mask(quantis_reg_get(qdev, MX_SR), MX_HST);
+  quantis_register_value reg = quantis_reg_get(qdev, MX_SR);
+
+  return reg2mask(reg, MX_SEN)
+       & reg2mask(reg, MX_HST);
 }
 
 
@@ -546,6 +553,15 @@ static inline int quantis_rng_read(quantis_pci_device* qdev,
       available_bytes = (length - read_bytes);
     }
 
+#ifdef __linux__
+    /*
+     * Do not consume a FIFO batch if the source has
+     * become unhealthy since availability was checked.
+     */
+    if (quantis_rng_error(qdev))
+      return -EIO;
+#endif
+
     while (available_bytes > 0)
     {
       int random_data_length = 4;
@@ -581,6 +597,15 @@ static inline int quantis_rng_read(quantis_pci_device* qdev,
       read_bytes += random_data_length;
     } // while (available_bytes > 0)
   } // while (read_bytes < length)
+
+#ifdef __linux__
+  /*
+   * Reject the entire acquisition if a hardware fault
+   * is detected before returning the collected bytes.
+   */
+  if (quantis_rng_error(qdev))
+    return -EIO;
+#endif
 
   return read_bytes;
 }

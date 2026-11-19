@@ -460,6 +460,10 @@ ssize_t quantis_read(struct file* file,
   int bytes_read = 0;
   quantis_pci_device* device;
 
+  /* Zero-length reads must not consume hardware data. */
+  if (!length)
+    return 0;
+
   /* Verify if this is a write access. */
   if(!access_ok(buffer, length))
   {
