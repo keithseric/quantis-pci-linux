@@ -75,3 +75,18 @@ entropy evaluation or AIS31 certification.
 See [known limitations](docs/known-limitations.md) for the
 distinction between diagnostic health reporting and acquisition-time
 health enforcement.
+
+## Module integrity and trust
+
+DKMS signing and kernel acceptance are separate properties.
+
+A signed module is not necessarily trusted by the running kernel.
+Verify the signing and trust configuration required by the
+deployment environment.
+
+Do not distribute private module-signing keys or disable
+signature enforcement merely to load this driver.
+
+Retain independently verified recovery artifacts when replacing
+an installed driver. Restrict access to deployment logs, private
+configuration and backup archives.

@@ -69,11 +69,40 @@ Run from the repository root:
     git archive HEAD common linux dkms.conf | \
         sudo tar -xf - -C /usr/src/quantis-pci-18.03.08-linux61.3
 
-    sudo dkms add -m quantis-pci -v 18.03.08-linux61.3
+Use a conventional system installation umask for DKMS operations:
 
-    sudo dkms build -m quantis-pci -v 18.03.08-linux61.3
+    sudo sh -c 'umask 022; exec dkms "$@"' sh \
+        add -m quantis-pci -v 18.03.08-linux61.3
 
-    sudo dkms install -m quantis-pci -v 18.03.08-linux61.3
+    sudo sh -c 'umask 022; exec dkms "$@"' sh \
+        build -m quantis-pci -v 18.03.08-linux61.3
+
+    sudo sh -c 'umask 022; exec dkms "$@"' sh \
+        install -m quantis-pci -v 18.03.08-linux61.3
+
+A restrictive inherited umask, such as 077, can cause depmod
+to generate root-only module dependency and alias indexes.
+The module may then be discoverable by root but not by
+unprivileged users or services.
+
+If this occurs, regenerate the indexes using:
+
+    sudo sh -c 'umask 022; exec depmod -a "$1"' sh "$(uname -r)"
+
+Verify module discovery without elevated privileges:
+
+    /usr/sbin/modinfo -n quantis_pci
+
+Inspect the generated module indexes:
+
+    ls -l /lib/modules/$(uname -r)/modules.dep*
+    ls -l /lib/modules/$(uname -r)/modules.alias*
+
+On the tested Debian system, these indexes are normally
+owned by root and have mode 0644.
+
+This installation-specific umask does not require relaxing
+the permissions of private backups, logs or signing keys.
 
 Load the installed driver:
 
@@ -89,6 +118,11 @@ Verify detection:
 
 Automatic PCI device discovery depends on the system's
 module-loading configuration.
+
+On the tested Debian installation, PCI modalias resolution
+automatically loaded the installed module after both a normal
+reboot and a cold power cycle. No explicit module-loading
+configuration was required.
 
 If explicit boot-time loading is required:
 
@@ -164,10 +198,9 @@ Stop all applications using the Quantis device first.
 
     sudo modprobe -r quantis_pci
 
-    sudo dkms remove \
-        -m quantis-pci \
-        -v 18.03.08-linux61.3 \
-        --all
+    sudo sh -c 'umask 022; exec dkms "$@"' sh \
+        remove -m quantis-pci \
+        -v 18.03.08-linux61.3 --all
 
 Review and remove any project-specific module-loading
 configuration, udev rules, and DKMS source files.
@@ -178,3 +211,49 @@ Test builds against the target kernel before upgrading
 security-sensitive systems.
 
 Keep a known-good driver version and a recovery path.
+
+Before replacing an existing installation:
+
+- Record the running kernel and current DKMS inventory.
+- Preserve the previous source and kernel-specific module.
+- Verify the integrity of the recovery artifacts.
+- Stop applications before unloading an active module.
+- Review existing module-signing and trust requirements.
+
+A successful DKMS build does not establish that the module
+has loaded or that the hardware is operational.
+
+Verify the installed module, loaded driver identity,
+device permissions, hardware diagnostics and acquisition
+behavior after deployment.
+
+For an additional installed kernel, use its explicit kernel
+release with the DKMS build and install commands:
+
+    sudo sh -c 'umask 022; exec dkms "$@"' sh \
+        build -m quantis-pci -v 18.03.08-linux61.3 \
+        -k TARGET_KERNEL
+
+    sudo sh -c 'umask 022; exec dkms "$@"' sh \
+        install -m quantis-pci -v 18.03.08-linux61.3 \
+        -k TARGET_KERNEL
+
+Replace TARGET_KERNEL with the actual target kernel release.
+Do not load a module compiled for a different running kernel.
+
+Verify module discovery for that kernel:
+
+    /usr/sbin/modinfo -k TARGET_KERNEL -n quantis_pci
+
+Once the replacement installation and independent recovery
+artifacts have been verified, review and retire obsolete DKMS
+registrations that could compete during future kernel updates.
+
+Retain a recovery copy independently of the active DKMS tree.
+
+After reboot, verify automatic module loading, hardware health,
+permissions and dependent application startup.
+
+The package enables DKMS AUTOINSTALL. Successful automatic
+rebuilding during a future kernel upgrade remains dependent on
+compatible kernel interfaces, headers and system configuration.

@@ -68,5 +68,16 @@ before posting diagnostic output.
 This table records a tested configuration, not a comprehensive
 hardware compatibility matrix.
 
+## Kernel qualification matrix
+
+| Kernel | DKMS build | Installation | Runtime | Normal reboot | Cold boot |
+|---|---|---|---|---|---|
+| 6.1.0-54-amd64 | Pass | Pass | Pass | Pass | Pass |
+| 6.1.0-53-amd64 | Pass | Pass | Not tested | Not tested | Not tested |
+
+The fallback kernel module passed checksum, module metadata,
+dependency index and PCI modalias verification. Installation
+qualification must not be interpreted as runtime qualification.
+
 Other Quantis models and multiple-card operation require
 additional hardware validation.

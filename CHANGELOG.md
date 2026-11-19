@@ -37,6 +37,17 @@
 - Confirm disconnected descriptors cannot access a rebound device.
 - Complete repeated restoration of the previous production driver.
 
+### Production deployment
+
+- Compare the qualified candidate with the packaged DKMS build.
+- Permanently install and validate the hardened production module.
+- Repeat native security regression tests after installation.
+- Build and install the package for two Linux 6.1 kernel versions.
+- Retire the obsolete development DKMS registration.
+- Validate automatic driver loading after normal reboot.
+- Validate hardware initialization after a cold power cycle.
+- Confirm automatic recovery of dependent userspace services.
+
 ### Packaging
 
 - Increment the DKMS package version to 18.03.08-linux61.3.

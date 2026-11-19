@@ -243,13 +243,144 @@ kernel logs.
 The earlier production driver was restored following each
 controlled qualification session.
 
-Five production restoration sessions completed successfully.
-The installed production DKMS module remained unchanged.
+Five production restoration sessions completed successfully
+during controlled candidate qualification.
+
+The installed legacy production DKMS module remained unchanged
+during those sessions, before permanent deployment of linux61.3.
+
+### Permanent DKMS deployment
+
+The hardened source implementation was packaged as
+18.03.08-linux61.3 and built using DKMS 3.0.10.
+
+Both Linux 6.1.0-54-amd64 and Linux 6.1.0-53-amd64 builds
+completed successfully.
+
+The runtime-qualified candidate and the production DKMS build
+for Linux 6.1.0-54-amd64 were compared before deployment.
+
+The comparison found matching contents in all 22 compared
+allocated ELF sections, excluding the build-ID note.
+All 401 compared relocation records matched.
+
+The comparison supports equivalence of the examined binary
+components. It is not a formal proof of behavioral equivalence
+or complete binary identity.
+
+An initial deployment encountered module discovery failures
+after restrictive inherited umask settings caused depmod to
+generate root-only module indexes.
+
+The legacy production module was recovered using an independently
+verified recovery artifact. Module indexes were regenerated with
+umask 022, restoring normal module discovery.
+
+The corrected deployment completed successfully.
+
+| Validation | Result |
+|---|---|
+| Production DKMS installation | Pass |
+| Installed module checksum | Pass |
+| Loaded module identity | Pass |
+| Unprivileged module discovery | Pass |
+| PCI modalias resolution | Pass |
+| Fallback kernel installation | Pass |
+| Legacy DKMS registration retirement | Pass |
+
+The independently verified legacy recovery module and archived
+source were retained outside the active DKMS registration.
+
+### Installed production security regression
+
+The native security qualification was repeated against the
+permanently installed hardened module.
+
+Administrative authorization, invalid mask handling, invalid
+userspace pointers, unsupported IOCTL handling and bounded
+acquisition behavior passed the regression checks.
+
+An additional 1,000 nonblocking acquisition attempts produced:
+
+- 835 successful acquisitions.
+- 165 EAGAIN responses.
+- Zero unexpected errors.
+
+Hardware health remained operational and the final module
+reference count was zero.
+
+### Production application integration
+
+Dependent userspace services successfully operated with the
+permanently installed driver.
+
+Integration testing included hardware diagnostics, random
+byte acquisition, application input validation and periodic
+hardware health and statistical screening.
+
+All 46 functional and input-validation assertions passed
+after correction of a test-harness response-field error.
+Additional emoji acquisition tests also passed.
+
+Network-facing service integration was verified separately
+from the driver. The driver itself does not provide network
+services.
+
+Private application implementation and infrastructure
+configuration are outside the scope of this repository.
+
+### Normal reboot and cold boot
+
+On 2026-11-19 the production installation completed both a
+normal reboot and a cold power cycle.
+
+The cold power cycle was performed by the maintainer.
+The subsequent operating state was verified through a recorded
+qualification procedure.
+
+| Validation | Normal reboot | Cold boot |
+|---|---|---|
+| Correct production kernel | Pass | Pass |
+| Installed module integrity | Pass | Pass |
+| Automatically loaded module identity | Pass | Pass |
+| PCI driver binding | Pass | Pass |
+| Character device permissions | Pass | Pass |
+| Reported healthy modules | 4 of 4 | 4 of 4 |
+| Automatic service startup | Pass | Pass |
+| Fresh statistical assurance | Pass | Pass |
+| Failed systemd units | 0 | 0 |
+| Matching kernel fault indicators | None | None |
+
+No manual driver loading or dependent service startup was
+required during either boot qualification.
+
+The expected out-of-tree and module-signature trust warnings
+were present. Secure Boot was disabled on the tested system.
+
+### Statistical screening after deployment
+
+The installed production driver supplied three separate
+one-MiB samples for periodic statistical screening.
+
+| Measurement | Deployment | Normal reboot | Cold boot |
+|---|---:|---:|---:|
+| Acquisition throughput, Mbps | 16.0384 | 16.0381 | 16.0260 |
+| Empirical Shannon entropy, bits/byte | 7.99980171 | 7.99982972 | 7.99983213 |
+| Monobit p-value | 0.136907 | 0.653044 | 0.749706 |
+| Byte chi-square p-value | 0.073383 | 0.617482 | 0.676758 |
+| Runs p-value | 0.628392 | 0.244635 | 0.477335 |
+
+All three samples passed the configured statistical screening
+threshold of 0.001.
+
+These observations are not independent entropy evaluation,
+cryptographic certification or proof of randomness.
 
 ### Remaining qualification
 
-- Permanent installation and boot validation of linux61.3.
+- Runtime testing of the installed fallback kernel.
 - Automatic DKMS rebuilding across kernel updates.
+- Enforced module-signature verification and Secure Boot.
 - Broader kernel and hardware compatibility.
 - Multiple-card operation.
 - Removal raced against active acquisition.

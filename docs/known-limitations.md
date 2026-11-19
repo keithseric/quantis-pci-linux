@@ -128,3 +128,36 @@ PCI 16 Mbps card under Linux 6.1.0-54-amd64.
 
 Results do not establish compatibility with every Quantis model,
 kernel series, architecture or operating environment.
+
+## Deployment qualification boundaries
+
+Normal reboot and cold power-cycle recovery have been validated
+on Linux 6.1.0-54-amd64.
+
+Linux 6.1.0-53-amd64 has passed build and installation checks,
+but the fallback kernel has not been runtime-tested.
+
+DKMS automatic installation is enabled. An actual automatic
+rebuild triggered by a subsequent kernel upgrade has not yet
+been qualified for this release.
+
+## Module signing and trust
+
+The production DKMS modules were signed using a locally
+generated signing key.
+
+The running kernel reported a module verification warning
+because the required trust was not established.
+
+The test platform had Secure Boot disabled. The driver was
+permitted to load and carried out-of-tree and module-signature
+taint indicators.
+
+Operation under enforced module-signature verification or
+Secure Boot has not been qualified.
+
+Successful loading on the test platform does not establish
+that another system will accept the same module.
+
+Do not disable platform security controls solely to load
+this experimental driver.

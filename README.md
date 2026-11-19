@@ -26,16 +26,18 @@ on Debian GNU/Linux 12 (Bookworm).
 | RNG modules | 4 |
 | Observed throughput | Approximately 16 Mbps |
 
-Other hardware and kernel versions may work but have not
-been validated.
+Version 18.03.08-linux61.3 has completed runtime qualification,
+permanent DKMS installation, normal reboot testing and cold
+power-cycle testing on Linux 6.1.0-54-amd64.
 
-The publication source has passed isolated compilation
-against the tested kernel. Its diagnostic utility has
-also been compiled and tested against physical hardware
-using the installed development driver.
+The package has also been built and installed successfully
+for Linux 6.1.0-53-amd64. Runtime testing of that fallback
+kernel has not been performed.
+
+Other hardware and kernel versions require additional validation.
 
 See the validation document for the distinction between
-production hardware testing and publication build testing.
+build, installation and physical hardware runtime testing.
 
 ## Features
 
@@ -155,6 +157,9 @@ card under Linux 6.1 demonstrated:
 - Successful acquisition with up to 16 independent reader processes.
 - Native and 32-bit IOCTL authorization and error handling.
 - Correct descriptor isolation following PCI unbinding and rebinding.
+- Successful permanent DKMS installation and security regression testing.
+- Automatic PCI driver loading following normal reboot and cold boot.
+- Automatic recovery of dependent userspace services.
 
 See [validation](docs/validation.md) for measured results and
 [known limitations](docs/known-limitations.md) for deployment
